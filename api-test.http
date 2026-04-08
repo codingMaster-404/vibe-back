@@ -1,0 +1,102 @@
+### ============================================================
+###  vibeBack API Test — IntelliJ HTTP Client
+###  서버: http://localhost:8081
+### ============================================================
+
+### [변수 설정]
+@baseUrl = http://localhost:8081/api
+@userId  = 1
+@logId   = 1
+
+
+### ============================================================
+###  👤 USER API
+### ============================================================
+
+### 1. 회원가입
+POST {{baseUrl}}/users/register
+Content-Type: application/json
+
+{
+  "email": "test@vibe.com",
+  "password": "password1234",
+  "nickname": "비이브유저",
+  "weeklyGoalMinutes": 600
+}
+
+
+### 2. 전체 사용자 목록 조회
+GET {{baseUrl}}/users
+
+
+### 3. 특정 사용자 단건 조회
+GET {{baseUrl}}/users/{{userId}}
+
+
+### 4. 이번 주 학습 목표 달성률 조회
+GET {{baseUrl}}/users/{{userId}}/weekly-progress
+
+
+### 5. 특정 날짜 기준 주간 달성률 조회 (과거 주 확인용)
+GET {{baseUrl}}/users/{{userId}}/weekly-progress/by-date?date=2025-04-01
+
+
+### 6. 주간 목표 학습 시간 수정 (예: 10시간 → 720분)
+PATCH {{baseUrl}}/users/{{userId}}/weekly-goal?minutes=720
+
+
+### ============================================================
+###  📝 STUDY LOG API
+### ============================================================
+
+### 7. 학습 로그 등록 (Webex 미팅 기록)
+POST {{baseUrl}}/study-logs
+Content-Type: application/json
+
+{
+  "meetingTitle": "CS 알고리즘 스터디 #1",
+  "startTime": "2026-04-07T10:00:00",
+  "endTime": "2026-04-07T12:30:00",
+  "userId": {{userId}}
+}
+
+
+### 8. 학습 로그 하나 더 등록 (달성률 변화 확인용)
+POST {{baseUrl}}/study-logs
+Content-Type: application/json
+
+{
+  "meetingTitle": "React 프론트엔드 스터디 #2",
+  "startTime": "2026-04-07T14:00:00",
+  "endTime": "2026-04-07T16:00:00",
+  "userId": {{userId}}
+}
+
+
+### 9. 전체 학습 로그 목록 조회
+GET {{baseUrl}}/study-logs
+
+
+### 10. 특정 사용자의 학습 로그 목록 조회
+GET {{baseUrl}}/study-logs/user/{{userId}}
+
+
+### 11. 학습 로그 단건 조회
+GET {{baseUrl}}/study-logs/{{logId}}
+
+
+### 12. 학습 로그 삭제
+DELETE {{baseUrl}}/study-logs/{{logId}}
+
+
+### ============================================================
+###  🔁 시나리오 테스트 순서 가이드
+###
+###  권장 실행 순서:
+###   1 → 7 → 8 → 4  (회원가입 후 로그 2개 등록, 달성률 확인)
+###
+###  예상 결과 (weeklyGoalMinutes=600 기준):
+###   - 로그 #7: 2시간 30분 = 150분
+###   - 로그 #8: 2시간      = 120분
+###   - 합계: 270분 / 600분 = 45.0%
+### ============================================================
