@@ -7,6 +7,7 @@ import org.springframework.data.repository.query.Param;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
 public interface FocusLogRepository extends JpaRepository<FocusLog, Long> {
 
@@ -26,4 +27,7 @@ public interface FocusLogRepository extends JpaRepository<FocusLog, Long> {
 
     /** 특정 유저의 최근 N개 FocusLog */
     List<FocusLog> findTop10ByUserIdOrderBySessionDateDesc(Long userId);
+
+    /** 특정 유저/강의 최신 1개 FocusLog (강사 관제탑 추세 시각화용) */
+    Optional<FocusLog> findTop1ByUserIdAndCourseIdOrderBySessionDateDesc(Long userId, Long courseId);
 }

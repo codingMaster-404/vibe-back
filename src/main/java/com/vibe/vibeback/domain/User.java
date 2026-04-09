@@ -3,15 +3,14 @@ package com.vibe.vibeback.domain;
 import jakarta.persistence.*;
 import lombok.*;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
 @Entity
 @Table(name = "users")
-@Getter
-@Setter
-@NoArgsConstructor
-@AllArgsConstructor
+@Getter @Setter
+@NoArgsConstructor @AllArgsConstructor
 @Builder
 public class User {
 
@@ -28,18 +27,42 @@ public class User {
     @Column(nullable = false, length = 50)
     private String nickname;
 
+    /** 연락처 — 강사가 수강생 명단 조회 시 노출 (nullable) */
+    @Column(length = 20)
+    private String phone;
+
     /**
-     * 주간 목표 학습 시간 (분 단위)
-     * 예: 600 = 10시간/주
+     * 생년월일 6자리 (학생 로그인용, 예: YYMMDD = "010101")
+     * 실제 서비스에서는 LocalDate + 추가 검증 권장.
      */
+    @Column(length = 6)
+    private String birthDate;
+
+    /** 주간 목표 학습 시간 (분 단위) */
     @Column(nullable = false)
     @Builder.Default
     private Integer weeklyGoalMinutes = 0;
 
-    /**
-     * 사용자 역할 — STUDENT(수강생) | INSTRUCTOR(강사)
-     * 기본값: STUDENT
-     */
+    // ── 보안: 계정 잠금 ──────────────────────────────────────────────
+
+    /** 연속 로그인 실패 횟수 (5회 초과 시 30분 잠금) */
+    @Column(nullable = false)
+    @Builder.Default
+    private Integer loginFailCount = 0;
+
+    /** 잠금 해제 시각 (null = 잠금 없음) */
+    @Column
+    private LocalDateTime lockedUntil;
+
+    /** 마지막 로그인 IP */
+    @Column(length = 45)
+    private String lastLoginIp;
+
+    /** 마지막 로그인 일시 */
+    @Column
+    private LocalDateTime lastLoginAt;
+
+    /** 사용자 역할 — STUDENT | INSTRUCTOR */
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     @Builder.Default
@@ -47,17 +70,14 @@ public class User {
 
     // ── 연관관계 ──────────────────────────────────────────────────
 
-    /** 이 수강생이 남긴 학습 로그 */
     @OneToMany(mappedBy = "user", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default
     private List<StudyLog> studyLogs = new ArrayList<>();
 
-    /** 강사가 개설한 강의 목록 (INSTRUCTOR 역할에서만 유의미) */
     @OneToMany(mappedBy = "instructor", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default
     private List<Course> createdCourses = new ArrayList<>();
 
-    /** 수강생의 수강 신청 목록 (STUDENT 역할에서만 유의미) */
     @OneToMany(mappedBy = "student", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default
     private List<Enrollment> enrollments = new ArrayList<>();

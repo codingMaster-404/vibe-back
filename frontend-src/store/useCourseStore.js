@@ -25,6 +25,8 @@ const useCourseStore = create((set, get) => ({
   submissions:  [],   // 내 제출 목록
   focusLogs:    [],   // 몰입 이력
   courseStats:  null, // 강사용 클래스 통계
+  /** 강사 대시보드: courseId → enrollments/stats (일괄 API) */
+  instructorEnrollmentStats: {},
   isLoading:    false,
   error:        null,
 
@@ -43,6 +45,54 @@ const useCourseStore = create((set, get) => ({
       const myCourses = await fetchJSON(`${BASE}/courses/enrolled?userId=${userId}`);
       set({ myCourses, isLoading: false });
     } catch (e) { set({ error: e.message, isLoading: false }); }
+  },
+
+  /** 강사 전용: 내가 개설한 강의 목록 (채점 대기 배지 포함) — App 레이아웃·사이드바용 */
+  fetchInstructorCourses: async (instructorId) => {
+    set({ isLoading: true, error: null });
+    try {
+      const courses = await fetchJSON(`${BASE}/courses/instructor/${instructorId}`);
+      set({ courses, isLoading: false });
+    } catch (e) {
+      set({ error: e.message, isLoading: false });
+    }
+  },
+
+  /** 강사 대시보드 카드용 통계만 갱신 (강의 목록은 App에서 fetchInstructorCourses로 이미 로드) */
+  fetchInstructorEnrollmentStatsOnly: async (instructorId) => {
+    try {
+      const statsMap = await fetchJSON(
+        `${BASE}/enrollments/instructor/${instructorId}/courses-stats`
+      );
+      set({ instructorEnrollmentStats: statsMap ?? {} });
+    } catch (e) {
+      set({ error: e.message });
+    }
+  },
+
+  /** 강의 개설 등 이후: 사이드바 강의 목록 + 대시보드 통계를 한 번에 동기화 */
+  refreshInstructorCoursesAndStats: async (instructorId) => {
+    set({ isLoading: true, error: null });
+    try {
+      const [courses, statsMap] = await Promise.all([
+        fetchJSON(`${BASE}/courses/instructor/${instructorId}`),
+        fetchJSON(`${BASE}/enrollments/instructor/${instructorId}/courses-stats`),
+      ]);
+      set({
+        courses,
+        instructorEnrollmentStats: statsMap ?? {},
+        isLoading: false,
+      });
+    } catch (e) {
+      set({ error: e.message, isLoading: false });
+    }
+  },
+
+  /**
+   * @deprecated 새 코드는 App에서 fetchInstructorCourses + 대시보드에서 fetchInstructorEnrollmentStatsOnly 조합 권장
+   */
+  fetchInstructorDashboardData: async (instructorId) => {
+    return get().refreshInstructorCoursesAndStats(instructorId);
   },
 
   fetchCourse: async (courseId) => {

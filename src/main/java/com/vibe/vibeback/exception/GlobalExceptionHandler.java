@@ -1,16 +1,21 @@
 package com.vibe.vibeback.exception;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
+import java.util.HashMap;
+import java.util.Map;
+
 /**
  * 애플리케이션 전역 예외 처리기.
  * 각 예외 유형을 잡아 적절한 HTTP 상태 코드와 ErrorResponse JSON 을 반환한다.
  */
 @RestControllerAdvice
+@Slf4j
 public class GlobalExceptionHandler {
 
     // ─────────────────────────────────────────
@@ -41,6 +46,39 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
     }
 
+    @ExceptionHandler(LoginFailedException.class)
+    public ResponseEntity<ErrorResponse> handleLoginFailed(LoginFailedException ex) {
+        ErrorResponse body = new ErrorResponse(
+                HttpStatus.UNAUTHORIZED.value(),
+                "Unauthorized",
+                ex.getMessage()
+        );
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(body);
+    }
+
+    @ExceptionHandler(AdminAuthException.class)
+    public ResponseEntity<Map<String, Object>> handleAdminAuth(AdminAuthException ex) {
+        HttpStatus status = "ACCOUNT_LOCKED".equals(ex.getCode()) ? HttpStatus.LOCKED : HttpStatus.UNAUTHORIZED;
+        Map<String, Object> body = new HashMap<>();
+        body.put("status", status.value());
+        body.put("error", status.getReasonPhrase());
+        body.put("code", ex.getCode());
+        body.put("message", ex.getMessage());
+        body.put("remainingAttempts", ex.getRemainingAttempts());
+        body.put("lockedMinutes", ex.getLockedMinutes());
+        return ResponseEntity.status(status).body(body);
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ErrorResponse> handleAccessDenied(AccessDeniedException ex) {
+        ErrorResponse body = new ErrorResponse(
+                HttpStatus.FORBIDDEN.value(),
+                "Forbidden",
+                ex.getMessage()
+        );
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(body);
+    }
+
     // ─────────────────────────────────────────
     //  413 — 파일 크기 초과
     // ─────────────────────────────────────────
@@ -61,10 +99,12 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleGeneral(Exception ex) {
+        log.error("Unhandled exception", ex);
+        String detail = ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName();
         ErrorResponse body = new ErrorResponse(
                 HttpStatus.INTERNAL_SERVER_ERROR.value(),
                 "Internal Server Error",
-                "서버 내부 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+                "서버 내부 오류가 발생했습니다: " + detail
         );
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body);
     }

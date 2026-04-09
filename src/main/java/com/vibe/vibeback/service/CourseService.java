@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.security.SecureRandom;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -84,11 +85,19 @@ public class CourseService {
 
     // ─── 강사의 개설 강의 목록 + 채점 대기 배지 ──────────────────────
     public List<CourseResponseDto> findByInstructor(Long instructorId) {
-        return courseRepository.findByInstructorId(instructorId).stream()
-                .map(c -> {
-                    long pending = submissionRepository.countPendingByCourseId(c.getId());
-                    return new CourseResponseDto(c, pending);
-                })
+        List<Course> courses = courseRepository.findByInstructorId(instructorId);
+        if (courses.isEmpty()) {
+            return List.of();
+        }
+        List<Long> ids = courses.stream().map(Course::getId).toList();
+        Map<Long, Long> pendingByCourse = new HashMap<>();
+        for (Object[] row : submissionRepository.countPendingGroupByCourseId(ids)) {
+            Long courseId = ((Number) row[0]).longValue();
+            long count = ((Number) row[1]).longValue();
+            pendingByCourse.put(courseId, count);
+        }
+        return courses.stream()
+                .map(c -> new CourseResponseDto(c, pendingByCourse.getOrDefault(c.getId(), 0L)))
                 .toList();
     }
 

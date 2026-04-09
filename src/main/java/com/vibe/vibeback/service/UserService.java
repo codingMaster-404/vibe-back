@@ -7,6 +7,7 @@ import com.vibe.vibeback.dto.WeeklyProgressDto;
 import com.vibe.vibeback.repository.StudyLogRepository;
 import com.vibe.vibeback.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -23,6 +24,7 @@ public class UserService {
 
     private final UserRepository userRepository;
     private final StudyLogRepository studyLogRepository;
+    private final PasswordEncoder passwordEncoder;
 
     // ─────────────────────────────────────────
     //  회원가입
@@ -30,17 +32,26 @@ public class UserService {
 
     @Transactional
     public UserResponseDto register(UserRequestDto dto) {
-        if (userRepository.existsByEmail(dto.getEmail())) {
-            throw new IllegalArgumentException("이미 사용 중인 이메일입니다: " + dto.getEmail());
+        String email = dto.getEmail() != null ? dto.getEmail().trim().toLowerCase() : "";
+        if (email.isEmpty()) {
+            throw new IllegalArgumentException("이메일은 필수입니다.");
+        }
+        if (userRepository.existsByEmail(email)) {
+            throw new IllegalArgumentException("이미 사용 중인 이메일입니다: " + email);
         }
         if (userRepository.existsByNickname(dto.getNickname())) {
             throw new IllegalArgumentException("이미 사용 중인 닉네임입니다: " + dto.getNickname());
         }
+        if (dto.getPassword() == null || dto.getPassword().isEmpty()) {
+            throw new IllegalArgumentException("비밀번호는 필수입니다.");
+        }
 
         User user = User.builder()
-                .email(dto.getEmail())
-                .password(dto.getPassword())   // TODO: BCrypt 암호화 추가 예정
+                .email(email)
+                .password(passwordEncoder.encode(dto.getPassword()))
                 .nickname(dto.getNickname())
+                .phone(dto.getPhone())
+                .role(dto.getRole() != null ? dto.getRole() : com.vibe.vibeback.domain.UserRole.STUDENT)
                 .weeklyGoalMinutes(dto.getWeeklyGoalMinutes() != null
                         ? dto.getWeeklyGoalMinutes() : 0)
                 .build();

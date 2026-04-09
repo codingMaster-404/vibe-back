@@ -1,217 +1,198 @@
 /**
- * useFocusTracker.js — Privacy-First AI 집중도 추적 훅
+ * useFocusTracker.js — 브라우저 로컬 AI 캠 몰입도 추적 훅 (v2)
  *
- * ✅ 영상 데이터는 절대 서버로 전송하지 않음.
- * ✅ 브라우저 내부에서만 face-api.js로 얼굴 랜드마크를 분석.
- * ✅ 0~100점 focusScore를 1분 단위로 기록해 averageFocusScore 산출.
+ * 주요 기능:
+ *   1. 200ms 마다 face-api.js로 얼굴 감지 → EAR(졸음) + 머리 기울기(집중) 계산
+ *   2. 1분마다 minuteScore 집계 → minuteScores 상태 업데이트
+ *   3. focusScore < LOW_FOCUS_THRESHOLD(30) 구간 → reviewTimestamps 자동 기록
+ *      (VOD <video> 요소의 currentTime(초) 기준)
+ *   4. stopTracking() → { averageFocusScore, minuteScores, reviewTimestamps, ... } 반환
  *
- * 설치: npm install face-api.js
- * 모델: public/models/ 폴더에 아래 파일 필요
+ * 프라이버시: 카메라 스트림은 숨겨진 <video ref> 에만 연결.
+ *            영상·이미지·얼굴 데이터는 절대 서버로 전송하지 않음.
+ *
+ * 모델 파일: public/models/ 폴더에 face-api.js weights 필요
  *   → https://github.com/justadudewhohacks/face-api.js/tree/master/weights
- *   - tiny_face_detector_model-weights_manifest.json
- *   - face_landmark_68_model-weights_manifest.json
+ *   tiny_face_detector_model-*  +  face_landmark_68_tiny_model-*
  */
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useRef, useState, useCallback } from 'react';
 import * as faceapi from 'face-api.js';
 
-// ─── 상수 ────────────────────────────────────────────────────────
-const MODEL_URL          = '/models';
-const DETECTION_INTERVAL = 200;   // 얼굴 감지 주기 (ms)
-const SCORE_INTERVAL     = 60000; // 분당 점수 집계 주기 (ms)
+// ── 상수 ─────────────────────────────────────────────────────────
+const DETECT_MS           = 200;    // 얼굴 감지 주기(ms)
+const MINUTE_MS           = 60_000; // 분당 집계 주기(ms)
+const EAR_DROWSY          = 0.20;   // EAR 임계값 (이 이하 → 졸음)
+const LOW_FOCUS_THRESHOLD = 30;     // 복습 타임스탬프 기록 임계값
+const MODELS_PATH         = '/models';
 
-// EAR 임계값 (Eye Aspect Ratio)
-const EAR_DROWSY  = 0.22;  // 이 이하면 졸음 의심
-const EAR_CLOSED  = 0.17;  // 이 이하면 눈 완전히 감음
-
-// 고개 기울기 임계값 (픽셀 기반 근사값)
-const HEAD_TILT_WARN  = 0.12;  // 얼굴 너비 대비 비율
-const HEAD_TILT_LEAVE = 0.22;
-
-// ─── EAR 계산 ────────────────────────────────────────────────────
-// 68-point 랜드마크 기준
-// 왼쪽 눈: 36~41 / 오른쪽 눈: 42~47
-const dist = (a, b) =>
-  Math.hypot(a.x - b.x, a.y - b.y);
-
-const calcEAR = (pts) => {
-  // EAR = (|p1-p5| + |p2-p4|) / (2 * |p0-p3|)
-  const vertical1 = dist(pts[1], pts[5]);
-  const vertical2 = dist(pts[2], pts[4]);
-  const horizontal = dist(pts[0], pts[3]);
-  return (vertical1 + vertical2) / (2 * horizontal);
-};
-
-// ─── 순간 집중도 점수 계산 ────────────────────────────────────────
-const calcInstantScore = ({ faceDetected, earAvg, headTiltRatio }) => {
-  if (!faceDetected) return 0; // 얼굴 이탈 = 0점
-
-  let score = 100;
-
-  // 졸음 감지 (눈 감음)
-  if (earAvg < EAR_CLOSED)  score -= 50;
-  else if (earAvg < EAR_DROWSY) score -= 25;
-
-  // 고개 이탈 감지
-  if (headTiltRatio > HEAD_TILT_LEAVE) score -= 35;
-  else if (headTiltRatio > HEAD_TILT_WARN)  score -= 15;
-
-  return Math.max(0, score);
-};
-
-// ─── 훅 본체 ─────────────────────────────────────────────────────
+// ── 훅 ───────────────────────────────────────────────────────────
 export default function useFocusTracker() {
-  const videoRef = useRef(null);        // 숨겨진 video 엘리먼트
-  const streamRef = useRef(null);       // MediaStream 참조
-  const detectionTimerRef = useRef(null);
-  const scoreTimerRef = useRef(null);
+  const [isTracking, setIsTracking]             = useState(false);
+  const [focusScore, setFocusScore]             = useState(null);
+  const [minuteScores, setMinuteScores]         = useState([]);
+  const [reviewTimestamps, setReviewTimestamps] = useState([]);
 
-  const [isReady, setIsReady]         = useState(false);  // 모델 로딩 완료
-  const [isTracking, setIsTracking]   = useState(false);
-  const [currentScore, setCurrentScore] = useState(null); // 현재 순간 점수
-  const [minuteScores, setMinuteScores] = useState([]);   // 분당 점수 배열
-  const [status, setStatus]           = useState('idle'); // idle|loading|tracking|error
-  const [errorMsg, setErrorMsg]       = useState(null);
+  const streamRef         = useRef(null);
+  const videoRef          = useRef(null);   // 숨겨진 <video> — 카메라 입력
+  const vodVideoRef       = useRef(null);   // 외부 VOD <video> — currentTime 참조
+  const detectTimer       = useRef(null);
+  const minuteTimer       = useRef(null);
+  const instantBuf        = useRef([]);     // 현재 분 내 순간 점수 버퍼
+  const minuteScoresRef   = useRef([]);     // 최신 minuteScores 동기 참조
+  const reviewTsRef       = useRef([]);     // 최신 reviewTimestamps 동기 참조
+  const inLowFocuse       = useRef(false);  // 연속 저집중 구간 중복 기록 방지
+  const modelsLoaded      = useRef(false);
 
-  // 현재 분 동안의 순간 점수 버퍼
-  const instantBuffer = useRef([]);
-
-  // ─── 모델 사전 로딩 ────────────────────────────────────────────
-  useEffect(() => {
-    const loadModels = async () => {
-      setStatus('loading');
-      try {
-        await Promise.all([
-          faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
-          faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-        ]);
-        setIsReady(true);
-        setStatus('idle');
-      } catch (e) {
-        setErrorMsg('AI 모델 로딩 실패. /public/models 폴더를 확인하세요.');
-        setStatus('error');
-      }
-    };
-    loadModels();
+  // ── 모델 로드 ──────────────────────────────────────────────────
+  const ensureModels = useCallback(async () => {
+    if (modelsLoaded.current) return;
+    await Promise.all([
+      faceapi.nets.tinyFaceDetector.loadFromUri(MODELS_PATH),
+      faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODELS_PATH),
+    ]);
+    modelsLoaded.current = true;
   }, []);
 
-  // ─── 추적 시작 ────────────────────────────────────────────────
-  const startTracking = useCallback(async () => {
-    if (!isReady) return;
+  // ── EAR 계산 ───────────────────────────────────────────────────
+  const calcEAR = (pts) => {
+    const d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+    return (d(pts[1], pts[5]) + d(pts[2], pts[4])) / (2 * d(pts[0], pts[3]));
+  };
 
+  // ── 순간 focusScore 계산 ──────────────────────────────────────
+  const calcScore = (landmarks) => {
+    const pts  = landmarks.positions;
+    const earL = calcEAR(pts.slice(36, 42));
+    const earR = calcEAR(pts.slice(42, 48));
+    if ((earL + earR) / 2 < EAR_DROWSY) return 20;  // 졸음
+
+    // 머리 기울기 패널티
+    const nose      = pts[30];
+    const eyeCx     = (pts[36].x + pts[45].x) / 2;
+    const faceW     = Math.abs(pts[16].x - pts[0].x) || 1;
+    const tilt      = Math.abs(nose.x - eyeCx) / faceW;
+    return Math.max(0, Math.min(100, 90 - tilt * 200));
+  };
+
+  // ── 추적 시작 ─────────────────────────────────────────────────
+  /**
+   * @param {HTMLVideoElement|null} vodElement — VOD 플레이어 요소
+   *   전달 시 저집중 구간의 currentTime(초)을 reviewTimestamps에 기록
+   */
+  const startTracking = useCallback(async (vodElement = null) => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 320, height: 240, facingMode: 'user' },
-        audio: false,
-      });
+      await ensureModels();
+
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
       streamRef.current = stream;
 
-      // 숨겨진 video 엘리먼트에 스트림 연결 (화면에는 표시 안 함)
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
 
+      vodVideoRef.current = vodElement;
+
+      // 상태·버퍼 초기화
+      instantBuf.current      = [];
+      minuteScoresRef.current = [];
+      reviewTsRef.current     = [];
+      inLowFocuse.current     = false;
+      setMinuteScores([]);
+      setReviewTimestamps([]);
+      setFocusScore(null);
       setIsTracking(true);
-      setStatus('tracking');
-      instantBuffer.current = [];
 
-      // 200ms마다 얼굴 감지 + 순간 점수 계산
-      detectionTimerRef.current = setInterval(async () => {
+      // ── ① 200ms 얼굴 감지 루프 ──────────────────────────────
+      detectTimer.current = setInterval(async () => {
         if (!videoRef.current) return;
+        const det = await faceapi
+          .detectSingleFace(videoRef.current, new faceapi.TinyFaceDetectorOptions())
+          .withFaceLandmarks(true);
 
-        const detection = await faceapi
-          .detectSingleFace(
-            videoRef.current,
-            new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 })
-          )
-          .withFaceLandmarks();
+        const score = det ? calcScore(det.landmarks) : 0;
+        setFocusScore(score);
+        instantBuf.current.push(score);
 
-        let instant = 0;
-
-        if (detection) {
-          const lm = detection.landmarks.positions;
-
-          // 왼쪽 눈(36~41), 오른쪽 눈(42~47) 랜드마크 슬라이싱
-          const leftEyePts  = lm.slice(36, 42);
-          const rightEyePts = lm.slice(42, 48);
-          const earLeft  = calcEAR(leftEyePts);
-          const earRight = calcEAR(rightEyePts);
-          const earAvg   = (earLeft + earRight) / 2;
-
-          // 고개 기울기: 코 끝(30)과 두 눈 중심의 수평 편차 비율
-          const leftEyeCenter  = lm[39];  // 왼쪽 눈 안쪽 꼬리
-          const rightEyeCenter = lm[42];  // 오른쪽 눈 안쪽 꼬리
-          const noseTip        = lm[30];
-          const eyeCenterX     = (leftEyeCenter.x + rightEyeCenter.x) / 2;
-          const faceWidth      = dist(lm[0], lm[16]); // 얼굴 가로 폭
-          const headTiltRatio  = Math.abs(noseTip.x - eyeCenterX) / faceWidth;
-
-          instant = calcInstantScore({ faceDetected: true, earAvg, headTiltRatio });
+        // ── 복습 타임스탬프 기록 (저집중 구간 시작점만 기록) ──
+        if (score < LOW_FOCUS_THRESHOLD) {
+          if (!inLowFocuse.current && vodVideoRef.current) {
+            const sec = Math.floor(vodVideoRef.current.currentTime);
+            reviewTsRef.current = [...reviewTsRef.current, sec];
+            setReviewTimestamps([...reviewTsRef.current]);
+          }
+          inLowFocuse.current = true;
         } else {
-          // 얼굴 미감지
-          instant = calcInstantScore({ faceDetected: false });
+          inLowFocuse.current = false;
         }
+      }, DETECT_MS);
 
-        setCurrentScore(instant);
-        instantBuffer.current.push(instant);
-      }, DETECTION_INTERVAL);
+      // ── ② 1분마다 버퍼 집계 ─────────────────────────────────
+      minuteTimer.current = setInterval(() => {
+        flushBuffer();
+      }, MINUTE_MS);
 
-      // 1분마다 평균 점수 집계
-      scoreTimerRef.current = setInterval(() => {
-        const buf = instantBuffer.current;
-        if (buf.length === 0) return;
-        const avg = Math.round(buf.reduce((s, v) => s + v, 0) / buf.length);
-        setMinuteScores((prev) => [...prev, avg]);
-        instantBuffer.current = [];
-      }, SCORE_INTERVAL);
-
-    } catch (e) {
-      setErrorMsg('카메라 접근이 거부되었습니다. 브라우저 카메라 권한을 확인하세요.');
-      setStatus('error');
+    } catch (err) {
+      console.error('[FocusTracker] 초기화 실패:', err);
+      setIsTracking(false);
     }
-  }, [isReady]);
+  }, [ensureModels]);
 
-  // ─── 추적 중단 + 세션 평균 반환 ───────────────────────────────
+  // ── 버퍼 플러시 (내부 헬퍼) ───────────────────────────────────
+  const flushBuffer = () => {
+    if (instantBuf.current.length === 0) return;
+    const avg = Math.round(
+      instantBuf.current.reduce((s, v) => s + v, 0) / instantBuf.current.length
+    );
+    minuteScoresRef.current = [...minuteScoresRef.current, avg];
+    setMinuteScores([...minuteScoresRef.current]);
+    instantBuf.current = [];
+  };
+
+  // ── 추적 종료 ─────────────────────────────────────────────────
   const stopTracking = useCallback(() => {
-    clearInterval(detectionTimerRef.current);
-    clearInterval(scoreTimerRef.current);
+    clearInterval(detectTimer.current);
+    clearInterval(minuteTimer.current);
 
-    // 마지막 1분 미만 버퍼 처리
-    const buf = instantBuffer.current;
-    let finalScores = [...minuteScores];
-    if (buf.length > 0) {
-      const lastAvg = Math.round(buf.reduce((s, v) => s + v, 0) / buf.length);
-      finalScores = [...finalScores, lastAvg];
-    }
+    // 마지막 미완성 분 처리
+    flushBuffer();
 
-    // 카메라 스트림 종료
+    // 카메라 스트림 정지
     streamRef.current?.getTracks().forEach((t) => t.stop());
-
-    const sessionAvg =
-      finalScores.length > 0
-        ? Math.round(finalScores.reduce((s, v) => s + v, 0) / finalScores.length)
-        : null;
+    streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+    vodVideoRef.current = null;
 
     setIsTracking(false);
-    setStatus('idle');
-    setCurrentScore(null);
-    instantBuffer.current = [];
-    setMinuteScores([]);
+    setFocusScore(null);
 
-    // averageFocusScore와 분당 타임라인을 반환
-    return { averageFocusScore: sessionAvg, minuteScores: finalScores };
-  }, [minuteScores]);
+    // ── 최종 결과 객체 반환 ─────────────────────────────────────
+    const scores = minuteScoresRef.current;
+    const avg    = scores.length
+      ? Math.round(scores.reduce((s, v) => s + v, 0) / scores.length)
+      : 0;
+
+    return {
+      averageFocusScore:    avg,
+      minuteScores:         scores,
+      minuteScoresJson:     JSON.stringify(scores),
+      reviewTimestamps:     reviewTsRef.current,
+      reviewTimestampsJson: JSON.stringify(reviewTsRef.current),
+      totalMinutes:         scores.length,
+      focusedMinutes:       scores.filter((s) => s >= 60).length,
+      drowsyMinutes:        scores.filter((s) => s >= 20 && s < 60).length,
+      awayMinutes:          scores.filter((s) => s < 20).length,
+    };
+  }, []);
 
   return {
-    videoRef,       // <video ref={videoRef} hidden /> 에 연결
-    isReady,        // 모델 로딩 완료 여부
+    videoRef,          // 숨겨진 <video ref={videoRef} /> 에 연결
     isTracking,
-    currentScore,   // 현재 순간 집중도 (0~100)
-    minuteScores,   // 분당 집중도 배열
-    status,         // 'idle' | 'loading' | 'tracking' | 'error'
-    errorMsg,
+    focusScore,
+    minuteScores,
+    reviewTimestamps,
     startTracking,
-    stopTracking,   // 반환값: { averageFocusScore, minuteScores }
+    stopTracking,
   };
 }

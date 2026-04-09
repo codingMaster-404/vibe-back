@@ -37,14 +37,14 @@ export default function Sidebar({ onOpenCreateCourse, onOpenAccessCode }) {
   const navigate   = useNavigate();
   const { user }   = useUserStore();
   const { myEnrollments, fetchMyEnrollments } = useEnrollmentStore();
-  const { courses: instructorCourses, fetchMyCourses } = useCourseStore();
+  const { courses: instructorCourses, fetchInstructorCourses } = useCourseStore();
 
   const isInstructor = user?.role === 'INSTRUCTOR';
 
   useEffect(() => {
     if (!user) return;
     if (isInstructor) {
-      fetchMyCourses(user.id); // GET /api/courses/instructor/:id
+      fetchInstructorCourses(user.id);
     } else {
       fetchMyEnrollments(user.id);
     }

@@ -10,6 +10,11 @@ import java.util.Optional;
 
 public interface AssignmentSubmissionRepository extends JpaRepository<AssignmentSubmission, Long> {
 
+    /*
+     * 마감 임박(3일 이내) 집계는 모두 MySQL native + NOW()/DATE_ADD 로만 수행한다.
+     * (JPQL/Criteria 날짜 연산은 DB·타임존 차이로 어긋날 수 있음)
+     */
+
     /** 특정 과제의 모든 제출물 조회 (강사용) */
     List<AssignmentSubmission> findByAssignmentId(Long assignmentId);
 
@@ -31,14 +36,38 @@ public interface AssignmentSubmissionRepository extends JpaRepository<Assignment
            "WHERE s.assignment.course.id = :courseId AND s.status = 'SUBMITTED'")
     long countPendingByCourseId(@Param("courseId") Long courseId);
 
+    /** 강의 ID 목록에 대해 채점 대기(SUBMITTED) 건수를 한 번에 집계 (강사 강의 목록 N+1 방지) */
+    @Query("SELECT s.assignment.course.id, COUNT(s) FROM AssignmentSubmission s " +
+           "WHERE s.assignment.course.id IN :courseIds AND s.status = 'SUBMITTED' " +
+           "GROUP BY s.assignment.course.id")
+    List<Object[]> countPendingGroupByCourseId(@Param("courseIds") List<Long> courseIds);
+
     /**
      * 특정 강의의 마감 임박 과제 제출 현황
      * (수강생 사이드바 빨간 포인트 표시용 — dueDate 기준 3일 이내 + 미제출)
+     * MySQL 날짜 연산 사용 → nativeQuery = true
      */
-    @Query("SELECT COUNT(a) FROM Assignment a " +
-           "WHERE a.course.id = :courseId " +
-           "  AND a.dueDate BETWEEN CURRENT_TIMESTAMP AND (CURRENT_TIMESTAMP + 3) " +
-           "  AND a.id NOT IN (SELECT s.assignment.id FROM AssignmentSubmission s WHERE s.student.id = :studentId)")
+    @Query(value = "SELECT COUNT(*) FROM assignments a " +
+           "WHERE a.course_id = :courseId " +
+           "  AND a.due_date BETWEEN NOW() AND DATE_ADD(NOW(), INTERVAL 3 DAY) " +
+           "  AND a.id NOT IN (" +
+           "      SELECT s.assignment_id FROM assignment_submissions s WHERE s.student_id = :studentId" +
+           "  )",
+           nativeQuery = true)
     long countUpcomingDeadlineForStudent(@Param("courseId") Long courseId,
                                          @Param("studentId") Long studentId);
+
+    /**
+     * 수강생 기준, 여러 강의에 대한 마감 임박(3일 이내·미제출) 과제 수를 한 번에 집계
+     */
+    @Query(value = "SELECT a.course_id, COUNT(*) FROM assignments a " +
+           "WHERE a.course_id IN (:courseIds) " +
+           "  AND a.due_date BETWEEN NOW() AND DATE_ADD(NOW(), INTERVAL 3 DAY) " +
+           "  AND a.id NOT IN (" +
+           "      SELECT s2.assignment_id FROM assignment_submissions s2 WHERE s2.student_id = :studentId" +
+           "  ) " +
+           "GROUP BY a.course_id",
+           nativeQuery = true)
+    List<Object[]> countUpcomingDeadlineGroupByCourseId(@Param("courseIds") List<Long> courseIds,
+                                                        @Param("studentId") Long studentId);
 }

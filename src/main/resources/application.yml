@@ -1,0 +1,5 @@
+admin:
+  # 운영자 API 화이트리스트 (단일 IP 또는 CIDR, 쉼표 구분)
+  # 기본값은 로컬호스트만 허용, 운영에서는 환경변수로 교체
+  allowed-ip-ranges: ${ADMIN_ALLOWED_IP_RANGES:127.0.0.1,::1,0:0:0:0:0:0:0:1}
+
